@@ -1,0 +1,12 @@
+<odoo>
+    <record model="ir.ui.view" id="view_auditlog_log_form_extend">
+        <field name="name">auditlog.log.form.extend</field>
+        <field name="model">auditlog.log</field>
+        <field name="inherit_id" ref="auditlog.view_auditlog_log_form" />
+        <field name="arch" type="xml">
+            <field name="http_request_id" position="attributes">
+                <attribute name="invisible">1</attribute>
+            </field>
+        </field>
+    </record>
+</odoo>

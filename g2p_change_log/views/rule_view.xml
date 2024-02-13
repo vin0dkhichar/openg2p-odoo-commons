@@ -1,0 +1,16 @@
+<odoo>
+    <record model="ir.ui.view" id="view_auditlog_rule_form_extend">
+        <field name="name">auditlog.rule.form.extend</field>
+        <field name="model">auditlog.rule</field>
+        <field name="inherit_id" ref="auditlog.view_auditlog_rule_form" />
+        <field name="arch" type="xml">
+            <field name="action_id" position="after">
+                <field
+                    name="other_contact"
+                    readonly="state == 'subscribed'"
+                    invisible="model_model != 'res.partner'"
+                />
+            </field>
+        </field>
+    </record>
+</odoo>

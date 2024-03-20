@@ -1,9 +1,0 @@
-<odoo>
-    <record id="auditlog.menu_action_auditlog_http_session_tree" model="ir.ui.menu">
-        <field name="active" eval="False" />
-    </record>
-
-    <record id="auditlog.menu_action_auditlog_http_request_tree" model="ir.ui.menu">
-        <field name="active" eval="False" />
-    </record>
-</odoo>

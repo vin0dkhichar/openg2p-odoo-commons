@@ -7,5 +7,9 @@
     "development_status": "Alpha",
     "external_dependencies": {"python": ["python-jose"]},
     "depends": ["auth_oauth"],
-    "data": ["views/auth_oauth_provider.xml"],
+    "data": [
+        "views/auth_oauth_templates.xml",
+        "views/auth_oauth_provider.xml",
+        "views/res_users.xml",
+    ],
 }

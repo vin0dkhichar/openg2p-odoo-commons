@@ -21,6 +21,10 @@
                 />
             </field>
 
+            <field name="css_class" position="after">
+                <field name="image_icon_url" />
+            </field>
+
             <field name="validation_endpoint" position="after">
                 <field name="token_endpoint" />
                 <field name="jwks_uri" />
@@ -30,6 +34,15 @@
                 <field name="extra_authorize_params" />
                 <field name="verify_at_hash" />
                 <field name="date_format" />
+                <field name="allow_signup" />
+                <field
+                    name="signup_default_groups"
+                    invisible="allow_signup != 'yes'"
+                    widget="many2many_tags"
+                    options="{'no_create': True}"
+                />
+                <field name="sync_user_groups" />
+                <field name="company_id" />
             </field>
         </field>
     </record>

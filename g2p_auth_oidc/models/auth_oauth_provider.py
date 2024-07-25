@@ -104,12 +104,12 @@ class AuthOauthProvider(models.Model):
     )
     company_id = fields.Many2one("res.company", string="Company", default=lambda self: self.env.company.id)
 
-    def oidc_get_tokens(self, params):
+    def oidc_get_tokens(self, params, **kw):
         self.ensure_one()
         if self.flow == "oidc_auth_code":
-            access_token, id_token = self._oidc_get_tokens_auth_code_flow(params)
+            access_token, id_token = self._oidc_get_tokens_auth_code_flow(params, **kw)
         elif self.flow == "oidc_implicit":
-            access_token, id_token = self._oidc_get_tokens_implicit_flow(params)
+            access_token, id_token = self._oidc_get_tokens_implicit_flow(params, **kw)
         else:
             # TBD
             access_token, id_token = (None, None)
@@ -123,9 +123,9 @@ class AuthOauthProvider(models.Model):
         params["access_token"] = access_token
         params["id_token"] = id_token
 
-        self.verify_access_token(params)
+        self.verify_access_token(params, **kw)
         if id_token:
-            self.verify_id_token(params)
+            self.verify_id_token(params, **kw)
         return access_token, id_token
 
     def _oidc_get_tokens_implicit_flow(self, params):
@@ -213,7 +213,7 @@ class AuthOauthProvider(models.Model):
         return token
 
     @tools.ormcache("self.jwks_uri")
-    def oidc_get_jwks(self):
+    def oidc_get_jwks(self, **kw):
         r = requests.get(self.jwks_uri, timeout=10)
         r.raise_for_status()
         response = r.json()
@@ -237,25 +237,25 @@ class AuthOauthProvider(models.Model):
         validation = self.map_validation_values(validation, params)
         return validation
 
-    def verify_access_token(self, params):
+    def verify_access_token(self, params, **kw):
         self.ensure_one()
         access_token = params.get("access_token")
         jwt.decode(
             access_token,
-            self.oidc_get_jwks(),
+            self.oidc_get_jwks(**kw),
             options={
                 "verify_aud": False,
             },
         )
         return access_token
 
-    def verify_id_token(self, params):
+    def verify_id_token(self, params, **kw):
         self.ensure_one()
         access_token = params.get("access_token")
         id_token = params.get("id_token")
         jwt.decode(
             id_token,
-            self.oidc_get_jwks(),
+            self.oidc_get_jwks(**kw),
             audience=self.client_id,
             access_token=access_token,
             options={
@@ -276,8 +276,8 @@ class AuthOauthProvider(models.Model):
                     res[to_key] = validation.get(from_key, "")
         return res
 
-    def oidc_signup_create_user(self, validation, params, access_denied_exception=None):
-        self.oidc_signup_generate_user_values(validation, params)
+    def oidc_signin_create_user(self, validation, params, oauth_partner=None, access_denied_exception=None):
+        self.oidc_signin_generate_user_values(validation, params, oauth_partner=oauth_partner)
         if self.allow_signup == "system_default":
             state = json.loads(params["state"])
             token = state.get("t")
@@ -290,9 +290,9 @@ class AuthOauthProvider(models.Model):
                 raise access_denied_exception from e
         elif self.allow_signup == "yes":
             try:
-                if not validation.get("groups_id"):
+                if (not validation.get("groups_id")) and self.signup_default_groups:
                     validation["groups_id"] = [(4, group.id) for group in self.signup_default_groups]
-                new_user = self.env["res.users"].create(validation, params)
+                new_user = self.env["res.users"].create(validation)
                 return new_user.login
             except Exception as e:
                 if not access_denied_exception:
@@ -304,37 +304,74 @@ class AuthOauthProvider(models.Model):
                 access_denied_exception = AccessDenied("OIDC Signup failed!")
             raise access_denied_exception
 
-    def oidc_signup_generate_user_values(
-        self, validation, params, find_existing_partner=True, fields_model="res.users"
+    def oidc_signin_find_existing_partner(self, validation, params):
+        """
+        Should return partner object if already exists.
+        Supposed to be overriden by child classes.
+        """
+        return False
+
+    def oidc_signin_update_userinfo(self, validation, params, oauth_partner=None, oauth_user=None):
+        if oauth_user.oidc_userinfo_reset:
+            self.oidc_signin_generate_user_values(
+                validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user, create_user=False
+            )
+            oauth_partner.write(validation)
+            oauth_user.oidc_userinfo_reset = False
+
+    def oidc_signin_update_groups(self, validation, params, oauth_partner=None, oauth_user=None):
+        if self.sync_user_groups == "on_login" or (
+            self.sync_user_groups == "on_reset" and oauth_user.oidc_groups_reset
+        ):
+            self.oidc_signin_process_groups(
+                validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user
+            )
+            groups = validation.get("groups_id")
+            if groups:
+                oauth_user.groups_id = [(5,)] + groups
+                oauth_user.oidc_groups_reset = False
+
+    def oidc_signin_generate_user_values(
+        self, validation, params, oauth_partner=None, oauth_user=None, create_user=True
     ):
-        self.oidc_signup_process_email(validation, params)
-        self.oidc_signup_process_login(validation, params)
-        self.oidc_signup_process_groups(validation, params)
+        self.oidc_signin_process_email(validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user)
+        self.oidc_signin_process_login(validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user)
+        self.oidc_signin_process_groups(
+            validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user
+        )
 
-        if find_existing_partner:
-            partner = self.oidc_signup_find_existing_partner(validation, params)
-            if partner:
-                new_validation = {
-                    "login": validation["login"],
-                    "groups_id": validation.get("groups_id", []),
-                    "partner_id": partner.id,
-                    "oauth_provider_id": self.id,
-                    "oauth_uid": validation["user_id"],
-                    "oauth_access_token": params["access_token"],
-                    "active": True,
-                }
-                validation.clear()
-                validation.update(new_validation)
-                return validation
+        if not oauth_partner:
+            oauth_partner = self.oidc_signin_find_existing_partner(validation, params)
+        if oauth_partner and create_user:  # If a partner exists but the user needs to be created.
+            new_validation = {
+                "login": validation["login"],
+                "groups_id": validation.get("groups_id", []),
+                "partner_id": oauth_partner.id,
+                "oauth_provider_id": self.id,
+                "oauth_uid": validation["user_id"],
+                "oauth_access_token": params["access_token"],
+                "active": True,
+            }
+            validation.clear()
+            validation.update(new_validation)
+            return validation
 
-        self.oidc_signup_process_name(validation, params)
-        self.oidc_signup_process_gender(validation, params)
-        self.oidc_signup_process_birthdate(validation, params)
-        self.oidc_signup_process_phone(validation, params)
-        self.oidc_signup_process_picture(validation, params)
-        self.oidc_signup_process_other_fields(validation, params, fields_model=fields_model)
+        self.oidc_signin_process_name(validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user)
+        self.oidc_signin_process_gender(
+            validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user
+        )
+        self.oidc_signin_process_birthdate(
+            validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user
+        )
+        self.oidc_signin_process_phone(validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user)
+        self.oidc_signin_process_picture(
+            validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user
+        )
+        self.oidc_signin_process_other_fields(
+            validation, params, oauth_partner=oauth_partner, oauth_user=oauth_user
+        )
 
-        if fields_model == "res.users":
+        if create_user:  # Only for new user creation.
             validation.update(
                 {
                     "oauth_provider_id": self.id,
@@ -345,31 +382,24 @@ class AuthOauthProvider(models.Model):
             )
         return validation
 
-    def oidc_signup_find_existing_partner(self, validation, params):
-        """
-        Should return partner object if already exists.
-        Supposed to be overriden by child classes.
-        """
-        return False
-
-    def oidc_signup_process_login(self, validation, params):
+    def oidc_signin_process_login(self, validation, params, oauth_partner=None, oauth_user=None):
         oauth_uid = validation["user_id"]
         if "login" not in validation:
             validation["login"] = validation.get("email", f"provider_{self.id}_user_{oauth_uid}")
         return validation
 
-    def oidc_signup_process_name(self, validation, params):
+    def oidc_signin_process_name(self, validation, params, oauth_partner=None, oauth_user=None):
         if "name" not in validation:
             validation["name"] = validation.get("email")
         return validation
 
-    def oidc_signup_process_gender(self, validation, params):
+    def oidc_signin_process_gender(self, validation, params, oauth_partner=None, oauth_user=None):
         gender = validation.get("gender", "").capitalize()
         if gender:
             validation["gender"] = gender
         return validation
 
-    def oidc_signup_process_birthdate(self, validation, params):
+    def oidc_signin_process_birthdate(self, validation, params, oauth_partner=None, oauth_user=None):
         birthdate = validation.get("birthdate")
         if birthdate:
             validation["birthdate"] = datetime.strptime(birthdate, self.date_format).date()
@@ -377,22 +407,22 @@ class AuthOauthProvider(models.Model):
             validation.pop("birthdate")
         return validation
 
-    def oidc_signup_process_email(self, validation, params):
+    def oidc_signin_process_email(self, validation, params, oauth_partner=None, oauth_user=None):
         if "email" not in validation:
             validation["email"] = None
         return validation
 
-    def oidc_signup_process_phone(self, validation, params):
+    def oidc_signin_process_phone(self, validation, params, oauth_partner=None, oauth_user=None):
         return validation
 
-    def oidc_signup_process_picture(self, validation, params):
+    def oidc_signin_process_picture(self, validation, params, oauth_partner=None, oauth_user=None):
         picture = validation.pop("picture", None)
         if picture:
             with urlopen(picture, timeout=20) as response:
                 validation["image_1920"] = base64.b64encode(response.read())
         return validation
 
-    def oidc_signup_process_groups(self, validation, params):
+    def oidc_signin_process_groups(self, validation, params, oauth_partner=None, oauth_user=None):
         """
         Order of checking groups is groups_id, groups, roles
         """
@@ -406,8 +436,10 @@ class AuthOauthProvider(models.Model):
         if groups:
             group_ids = self.env["res.groups"].sudo().search([("full_name", "in", groups)]).ids
             validation["groups_id"] = [(4, group_id) for group_id in group_ids]
+        return validation
 
-    def oidc_signup_process_other_fields(self, validation, params, fields_model="res.users"):
+    def oidc_signin_process_other_fields(self, validation, params, oauth_partner=None, oauth_user=None):
+        fields_model = "res.partner" if oauth_partner else "res.users"
         for key in list(validation):
             if key in self.env[fields_model]._fields or key in ("user_id",):
                 value = validation[key]
@@ -421,24 +453,6 @@ class AuthOauthProvider(models.Model):
             validation["company_id"] = self.company_id.id
         return validation
 
-    def oidc_signin_userinfo_update(self, validation, params, oauth_user):
-        if oauth_user.oidc_userinfo_reset:
-            self.oidc_signup_generate_user_values(
-                validation, params, find_existing_partner=False, fields_model="res.partner"
-            )
-            oauth_user.partner_id.write(validation)
-            oauth_user.oidc_userinfo_reset = False
-
-    def oidc_signin_groups_update(self, validation, params, oauth_user):
-        if self.sync_user_groups == "on_login" or (
-            self.sync_user_groups == "on_reset" and oauth_user.oidc_groups_reset
-        ):
-            self.oidc_signup_process_groups(validation, params)
-            groups = validation.get("groups_id")
-            if groups:
-                oauth_user.groups_id = [(5,)] + groups
-                oauth_user.oidc_groups_reset = False
-
     @api.model
     def list_providers(
         self,
@@ -447,6 +461,7 @@ class AuthOauthProvider(models.Model):
         base_url=None,
         oidc_redirect_uri="/auth_oauth/signin",
         db_name=None,
+        **kw,
     ):
         if base_url is None:
             base_url = request.httprequest.url_root.rstrip("/")
@@ -461,7 +476,7 @@ class AuthOauthProvider(models.Model):
 
         providers = self.search_read(domain)
         for provider in providers:
-            state = dict(d=db_name, p=provider["id"], r=url_quote_plus(redirect))
+            state = dict(d=db_name, p=provider["id"], r=url_quote_plus(redirect), **kw)
             params = dict(
                 response_type=self.oidc_get_response_type(provider.get("flow")),
                 client_id=provider["client_id"],

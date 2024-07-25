@@ -44,14 +44,18 @@ class ResUsers(models.Model):
             if not oauth_user:
                 raise AccessDenied()
             assert len(oauth_user) == 1
-            oauth_provider.oidc_signin_userinfo_update(validation, params, oauth_user)
-            oauth_provider.oidc_signin_groups_update(validation, params, oauth_user)
+            oauth_provider.oidc_signin_update_userinfo(
+                validation, params, oauth_partner=oauth_user.partner_id, oauth_user=oauth_user
+            )
+            oauth_provider.oidc_signin_update_groups(
+                validation, params, oauth_partner=oauth_user.partner_id, oauth_user=oauth_user
+            )
             oauth_user.write({"oauth_access_token": params["access_token"]})
             return oauth_user.login
         except AccessDenied as access_denied_exception:
             if self.env.context.get("no_user_creation"):
                 return None
-            return oauth_provider.oidc_signup_create_user(
+            return oauth_provider.oidc_signin_create_user(
                 validation, params, access_denied_exception=access_denied_exception
             )
 

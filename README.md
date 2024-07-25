@@ -23,6 +23,7 @@ addon | version | maintainers | summary
 --- | --- | --- | ---
 [g2p_auth_oidc](g2p_auth_oidc/) | 17.0.1.0.0 |  | OpenID Connect Authentication
 [g2p_change_log](g2p_change_log/) | 17.0.1.0.0 |  | OpenG2P Change Log
+[g2p_disable_password_login](g2p_disable_password_login/) | 17.0.1.0.0 |  | Disable Password Login
 
 [//]: # (end addons)
 
